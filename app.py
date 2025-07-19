@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # Veritabanı yapılandırması
 # Render'dan aldığın DATABASE_URL'yi buraya yapıştır veya Render'da Environment Variable olarak ayarla
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://YOUR_DB_USER:YOUR_DB_PASSWORD@YOUR_DB_HOST:YOUR_DB_PORT/YOUR_DB_NAME')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://admin:zvlJaaIpL2udQG3QEaKNEWPDCHu4Do14@dpg-d1tt803e5dus73dvrnag-a.frankfurt-postgres.render.com/machine_control')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
