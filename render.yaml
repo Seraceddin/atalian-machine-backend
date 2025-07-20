@@ -1,0 +1,19 @@
+# render.yaml
+services:
+  - type: web
+    name: atalian-machine-backend # Render Web Hizmetinin Adı (kendi verdiğin isimle eşleşmeli)
+    env: python
+    plan: free # Ücretsiz planı kullan
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    envVars:
+      - key: DATABASE_URL # Veritabanı URL'si Render'da Ortam Değişkeni olarak ayarlı olmalı
+        fromDatabase:
+          name: atalian-machine-db # PostgreSQL veritabanının adı (Render'daki adıyla eşleşmeli)
+          property: connectionString
+      - key: FLASK_APP
+        value: app
+      - key: FLASK_ENV
+        value: production
+    pythonVersion: 3.9.18 # PYTHON SÜRÜMÜNÜ BURADA KESİN OLARAK BELİRTİYORUZ
+    # Veya pythonVersion: 3.10.13 de deneyebilirsin, hangisi daha stabil olursa
