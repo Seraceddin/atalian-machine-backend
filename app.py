@@ -17,6 +17,14 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # DATABASE_URL ortam değişkeni ayarlanmamışsa açıkça hata fırlat
 if not app.config['SQLALCHEMY_DATABASE_URI']:
     raise ValueError("DATABASE_URL environment variable is not set. Please set it in Render.")
+    
+# pg8000 kullanmak için URL şemasını güncelle
+# Eğer URL zaten 'postgresql+pg8000://' ile başlamıyorsa ekle.
+if db_url.startswith('postgresql://'):
+    db_url = db_url.replace('postgresql://', 'postgresql+pg8000://')
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
