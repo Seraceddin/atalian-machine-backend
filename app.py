@@ -3,15 +3,20 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import os
-import secrets # Benzersiz token üretmek için
-from werkzeug.security import generate_password_hash, check_password_hash # Şifreleri güvenli saklamak için
+import secrets
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
 # Veritabanı yapılandırması
-# Render'dan aldığın DATABASE_URL'yi buraya yapıştır veya Render'da Environment Variable olarak ayarla
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://admin:zvlJaaIpL2udQG3QEaKNEWPDCHu4Do14@dpg-d1tt803e5dus73dvrnag-a.frankfurt-postgres.render.com/machine_control')
+# Render'dan aldığın DATABASE_URL'yi ortam değişkeni olarak okuyacağız.
+# Eğer bu değişken ayarlanmazsa uygulama hata verecektir, bu da istediğimiz bir durum.
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# DATABASE_URL ortam değişkeni ayarlanmamışsa açıkça hata fırlat
+if not app.config['SQLALCHEMY_DATABASE_URI']:
+    raise ValueError("DATABASE_URL environment variable is not set. Please set it in Render.")
 
 db = SQLAlchemy(app)
 
@@ -26,8 +31,7 @@ class User(db.Model):
     is_approved = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    # Admin kullanıcıları için şifre alanı (nullable çünkü tüm kullanıcılar şifre kullanmayacak)
-    password_hash = db.Column(db.String(255), nullable=True)
+    password_hash = db.Column(db.String(255), nullable=True) # Admin kullanıcıları için şifre alanı
 
     machines = db.relationship('Machine', secondary='user_machines', backref=db.backref('assigned_users', lazy=True))
 
@@ -148,10 +152,7 @@ def admin_login():
     username = data.get('username')
     password = data.get('password')
 
-    # admin_user = User.query.filter_by(role='admin').first() # Dinamik admin bulma
-    # Sabit admin kullanıcı kontrolü (şimdilik)
     admin_user = User.query.filter_by(first_name='Admin', role='admin').first()
-
 
     if admin_user and admin_user.check_password(password):
         return jsonify({
@@ -173,7 +174,6 @@ def get_user_machines(device_id):
     machines_data = [m.to_dict() for m in user.machines]
     return jsonify({'machines': machines_data}), 200
 
-
 # Makine kullanım logu başlatma
 @app.route('/api/usage_log/start', methods=['POST'])
 def start_usage_log():
@@ -188,11 +188,6 @@ def start_usage_log():
         return jsonify({'message': 'User or Machine not found'}), 404
     if not user.is_approved:
         return jsonify({'message': 'User not approved'}), 403
-
-    # Aynı makine için devam eden bir log var mı kontrol et (önceki logu bitirmediyse)
-    # Bu senaryo yerine, mobil uygulama "DURDUR" komutunu göndermezse, 
-    # API'nin bu durumu bir hata olarak işlemesi daha iyi olabilir.
-    # Basitlik adına, şimdilik sadece yeni log oluşturuyoruz.
 
     new_log = UsageLog(user_id=user.id, machine_id=machine.id, start_time=datetime.utcnow(), status='started')
     db.session.add(new_log)
@@ -214,7 +209,6 @@ def stop_usage_log():
     if not user.is_approved:
         return jsonify({'message': 'User not approved'}), 403
 
-    # En son başlayan ve henüz bitmeyen logu bul
     latest_log = UsageLog.query.filter_by(user_id=user.id, machine_id=machine.id, status='started').order_by(UsageLog.start_time.desc()).first()
 
     if latest_log:
@@ -238,7 +232,7 @@ def manage_users():
         device_id = data.get('device_id')
         role = data.get('role', 'pending')
         is_approved = data.get('is_approved', False)
-        password = data.get('password') # Sadece admin rolü için gelebilir
+        password = data.get('password')
 
         if not (first_name and last_name and device_id):
             return jsonify({'message': 'Missing data'}), 400
@@ -275,10 +269,9 @@ def manage_single_user(user_id):
         if user.role == 'admin' and 'password' in data and data['password']:
             user.set_password(data['password'])
 
-        # Kullanıcıya makine atama/kaldırma
         if 'machines' in data and user.role == 'technician':
-            machine_ids = data['machines'] # machines: [id1, id2] şeklinde liste
-            user.machines = [] # Mevcut atamaları temizle
+            machine_ids = data['machines']
+            user.machines = []
             for mid in machine_ids:
                 machine = Machine.query.get(mid)
                 if machine:
@@ -288,19 +281,58 @@ def manage_single_user(user_id):
         return jsonify({'message': 'User updated', 'user': user.to_dict()}), 200
 
     elif request.method == 'DELETE':
-        # Önce bu makineye atanan kullanıcıların atamasını kaldır
-        # Bu, user_machines tablosundaki ilgili kayıtları siler.
-        # CASCADE DELETE kullanmak da bir seçenek olabilir ancak manuel yönetim daha güvenli olabilir.
-        # SQLAlchemy ORM ile direkt ilişkili kayıtları silmek
-        # user_machines ilişkisini yönetmek için ekstra bir yaklaşım gerekebilir,
-        # basitleştirilmiş olarak user_machines tablosundan direkt silme yapabiliriz
-
-        # Öncelikle, bu makineye atanmış tüm user_machine kayıtlarını bulup siliyoruz
-        for user in machine.assigned_users:
-            user.machines.remove(machine) # İlişkiyi kaldır
+        for user_machine in list(user.machines): # Kopyayla döngü yap, silerken problem olmaması için
+            user.machines.remove(user_machine)
 
         # Kullanım loglarını da sil (veya statüsünü güncelle)
-        # Daha önce başlayan ve bitmeyen logları 'cancelled' yapabiliriz
+        UsageLog.query.filter_by(user_id=user.id).update({'status': 'cancelled', 'end_time': datetime.utcnow()})
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify({'message': 'User deleted'}), 204
+
+@app.route('/api/admin/machines', methods=['GET', 'POST'])
+def manage_machines():
+    # TODO: Admin/manager rol kontrolü
+    if request.method == 'POST':
+        data = request.get_json()
+        name = data.get('name')
+        mac_address = data.get('mac_address')
+        is_active = data.get('is_active', True)
+
+        if not (name and mac_address):
+            return jsonify({'message': 'Missing data'}), 400
+
+        if Machine.query.filter_by(mac_address=mac_address).first():
+            return jsonify({'message': 'Machine with this MAC address already exists'}), 409
+
+        new_machine = Machine(name=name, mac_address=mac_address, is_active=is_active)
+        db.session.add(new_machine)
+        db.session.commit()
+        return jsonify({'message': 'Machine created', 'machine': new_machine.to_dict()}), 201
+
+    # GET metodu
+    machines = Machine.query.all()
+    return jsonify([machine.to_dict() for machine in machines]), 200
+
+@app.route('/api/admin/machines/<int:machine_id>', methods=['GET', 'PUT', 'DELETE'])
+def manage_single_machine(machine_id):
+    # TODO: Admin/manager rol kontrolü
+    machine = Machine.query.get_or_404(machine_id)
+
+    if request.method == 'GET':
+        return jsonify(machine.to_dict()), 200
+
+    elif request.method == 'PUT':
+        data = request.get_json()
+        machine.name = data.get('name', machine.name)
+        machine.mac_address = data.get('mac_address', machine.mac_address)
+        machine.is_active = data.get('is_active', machine.is_active)
+        db.session.commit()
+        return jsonify({'message': 'Machine updated', 'machine': machine.to_dict()}), 200
+
+    elif request.method == 'DELETE':
+        for user in machine.assigned_users:
+            user.machines.remove(machine) 
         UsageLog.query.filter_by(machine_id=machine.id, status='started').update({'status': 'cancelled', 'end_time': datetime.utcnow()})
         db.session.delete(machine)
         db.session.commit()
@@ -314,9 +346,8 @@ def get_all_usage_logs():
 
 @app.route('/api/admin/create_admin_user', methods=['POST'])
 def create_initial_admin():
-    # Sadece ilk admin kullanıcısını oluşturmak için geçici endpoint
-    # Production'da bu endpointi devre dışı bırakmak veya çok sıkı yetkilendirmek gerekir.
-    # Amacımız, projenin başında senin için bir admin hesabı oluşturmak.
+    # Bu endpoint sadece ilk admin kullanıcısını oluşturmak içindir.
+    # Üretim ortamında bu endpointi devre dışı bırakmak veya çok sıkı yetkilendirmek gerekir.
     admin_user_exists = User.query.filter_by(role='admin').first()
     if admin_user_exists:
         return jsonify({'message': 'Admin user already exists'}), 409
@@ -326,10 +357,8 @@ def create_initial_admin():
     if not password:
         return jsonify({'message': 'Password is required'}), 400
 
-    # Kendi admin kullanıcın için:
-    # Kullanıcı Adı: admin (first_name'i 'Admin' olarak kullandık)
-    # Şifre: adminpass (bunu istekle göndereceğiz)
-    new_admin = User(first_name='Admin', last_name='User', device_id='admin_device_id_placeholder', role='admin', is_approved=True)
+    # Kendi admin kullanıcın için: Kullanıcı Adı: 'Admin', Şifre: 'adminpass' olacak (request ile gönderilecek)
+    new_admin = User(first_name='Admin', last_name='System', device_id=secrets.token_hex(16), role='admin', is_approved=True) # Rastgele device_id
     new_admin.set_password(password)
     db.session.add(new_admin)
     db.session.commit()
@@ -338,8 +367,4 @@ def create_initial_admin():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all() # Tüm tabloları oluştur
-        # İlk admin kullanıcısını burada oluşturmayacağız,
-        # bunu /api/admin/create_admin_user endpointi üzerinden yapacağız.
-        # Güvenlik nedeniyle bunu manuel tetiklemek daha iyi.
-
-    app.run(debug=True) # debug=True sadece geliştirme ortamında kullanılmalı
+    app.run(debug=True, port=os.environ.get('PORT', 5000)) # Render'da PORT ortam değişkeni kullanılır
